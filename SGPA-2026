@@ -1,0 +1,141 @@
+/**
+ * SGPA 2026 - VERSÃO 9.0 (FINALIZADA)
+ * Monitorização Semanal + Atualização de Indicadores (Pontuais/Atrasados)
+ */
+
+const CONFIG = {
+  ABA_DOCS: "CONFERENCIA_DOCS",
+  ABA_DASHBOARD: "DASHBOARD_TV",
+  ID_PASTA_MEDIO: "1l0TW-QhqUTibcXGBUpfjGUfeP8MRiGzq", 
+  ID_PASTA_FUNDAMENTAL: "1fpFZvEZDXowPVbpM8GSf0u0h8QAeV-C7",
+  DIAS_LIMITE: 7 
+};
+
+function onOpen() {
+  SpreadsheetApp.getUi().createMenu('⚙️ SGPA 2026')
+    .addItem('🔄 Sincronizar Tudo Agora', 'executarSincronizacaoTotal')
+    .addToUi();
+}
+
+function executarSincronizacaoTotal() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName(CONFIG.ABA_DOCS);
+  if (!sheet) return;
+
+  const ultimaLinha = sheet.getLastRow();
+  if (ultimaLinha < 2) return;
+
+  ss.toast("A verificar prazos e indicadores...", "SGPA 2026", -1);
+  
+  const mapaDrive = mapearPastasDrive();
+  const nomesProfessores = sheet.getRange(2, 1, ultimaLinha - 1, 1).getValues();
+  const novosDados = [];
+
+  const agora = new Date();
+  const limiteMs = CONFIG.DIAS_LIMITE * 24 * 60 * 60 * 1000;
+
+  // Variáveis para contagem dos indicadores
+  let pontuais = 0;
+  let atrasados = 0;
+
+  for (let i = 0; i < nomesProfessores.length; i++) {
+    let nomeBusca = nomesProfessores[i][0].toString().trim().toUpperCase();
+    if (nomeBusca === "") continue;
+
+    let encontrouPasta = false;
+    let linhaResultado = ["SEM ARQUIVO RECENTE", "ARQUIVO ANTIGO", "PENDENTE"]; 
+
+    for (let nomePasta in mapaDrive) {
+      if (nomePasta.includes(nomeBusca)) {
+        encontrouPasta = true;
+        let info = verificarRecencia(mapaDrive[nomePasta], agora, limiteMs);
+        
+        if (info) {
+          linhaResultado = [info.nome, info.data, "NO PRAZO"];
+          pontuais++;
+        } else {
+          atrasados++;
+        }
+        break; 
+      }
+    }
+
+    if (!encontrouPasta) {
+      linhaResultado = ["PASTA NÃO LOCALIZADA", "---", "PENDENTE"];
+      atrasados++;
+    }
+
+    novosDados.push(linhaResultado);
+  }
+
+  // 1. Atualiza as Colunas C, D e E (Situação)
+  sheet.getRange(2, 3, novosDados.length, 3).setValues(novosDados);
+  
+  // 2. Atualiza os Indicadores de Resumo (G1/H1 e G2/H2)
+  // Ajustado conforme a sua imagem para as colunas G e H
+  sheet.getRange("H1").setValue(pontuais).setFontColor("#008000").setFontWeight("bold");
+  sheet.getRange("H2").setValue(atrasados).setFontColor("#FF0000").setFontWeight("bold");
+
+  // 3. Atualiza o Dashboard Visual
+  atualizarDashboard(sheet);
+  
+  ss.toast("Sincronização e Indicadores concluídos!", "SGPA 2026", 5);
+}
+
+// --- Funções Auxiliares (Drive e Dashboard) ---
+
+function mapearPastasDrive() {
+  let mapa = {};
+  let ids = [CONFIG.ID_PASTA_MEDIO, CONFIG.ID_PASTA_FUNDAMENTAL];
+  ids.forEach(id => {
+    try {
+      let folders = DriveApp.getFolderById(id).getFolders();
+      while (folders.hasNext()) {
+        let f = folders.next();
+        mapa[f.getName().toUpperCase()] = f.getId();
+      }
+    } catch (e) {}
+  });
+  return mapa;
+}
+
+function verificarRecencia(idPasta, agora, limite) {
+  try {
+    let files = DriveApp.getFolderById(idPasta).getFiles();
+    let melhorDoc = null;
+    let dataRef = 0;
+    while (files.hasNext()) {
+      let f = files.next();
+      let fDate = f.getLastUpdated();
+      if ((agora - fDate) <= limite) {
+        if (fDate.getTime() > dataRef) {
+          dataRef = fDate.getTime();
+          melhorDoc = f;
+        }
+      }
+    }
+    if (melhorDoc) {
+      return {
+        nome: melhorDoc.getName(),
+        data: Utilities.formatDate(melhorDoc.getLastUpdated(), "GMT-3", "dd/MM/yyyy HH:mm")
+      };
+    }
+  } catch (e) {}
+  return null;
+}
+
+function atualizarDashboard(sheetDocs) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheetDash = ss.getSheetByName(CONFIG.ABA_DASHBOARD);
+  if (!sheetDash) return;
+  const dados = sheetDocs.getRange(2, 1, sheetDocs.getLastRow() - 1, 5).getValues();
+  let statusMapa = {};
+  dados.forEach(r => statusMapa[r[0].toString().toUpperCase().trim()] = r[4]);
+  const nomesDash = sheetDash.getRange("A10:A23").getValues();
+  const icones = nomesDash.map(r => {
+    let n = r[0].toString().toUpperCase().trim();
+    if (!n) return [""];
+    return [statusMapa[n] === "NO PRAZO" ? "✅ Agenda" : "❌ Agenda"];
+  });
+  sheetDash.getRange("B10:B23").setValues(icones);
+}
